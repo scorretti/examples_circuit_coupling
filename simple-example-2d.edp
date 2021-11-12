@@ -1,0 +1,132 @@
+/* simple-example-2d.edp
+ * ---------------------
+ * 
+ * This example illustrates how the current can be computed by using the fake power theorem.
+ * The program is organized as follows:
+ * 1) a simple 2d geometry composed of three regions is created and meshed (lines 47-77).
+ *    The refinement can be tuned by modifying the variable refinement (line 47, the higher the better).
+ * 2) A randon conductivity is created (sigma1, line 88) and used to compute the test electric field.
+ *    The voltage between electrodes is fixed to 1 Volt (lines 80-101).
+ * 3) The true electric field and current density are computed (lines 103-120).
+ * 4) The fake power is computed, and compared with the total current (lines 122-131).
+ * 
+ * For each run of this program a different test electric field is generated, but in all cases the
+ * computed current converges to the value computed by integrating n.j on electrodes, up to the
+ * unavoidable numerical error, which tends to 0 by refining the mesh.
+ * 
+ * 
+ * List of variables:
+ * ------------------
+ * refinement                   Refinement used for the mesh (the higher, the better)
+ * nn                           Reference number of nodes used to discretize the borders
+ * bnd1  ... bnd8               Borders used to create the geometry
+ * incl1 ... incl3                 "      "   "   "     "      "
+ * trou                            "      "   "   "     "      "
+ * cut1, cut2                      "      "   "   "     "      "
+ * Th                           Mesh
+ * grad                         Macro: gradient in 2d
+ * Hgrad                        Finite Element space function discretized by using P1 functions
+ * Hgrad0                       Finite Element space function discretized by using P0 functions
+ * vt                           Test function used in all weak formulations
+ * v1                           Scalar electric potential used to compute the test electric field  e1 = [e1x e1y]
+ * v2                             "       "         "       "   "    "     "  true current density j2 = [j2x j2y]
+ * sigma1                       Random conductivity used to compute the test electric field
+ * sigma2                       Conductivity of the real thing, used to compute the real current density
+ * computeTestElectricField     Weak formulation solved to compute the test electric field
+ * computeTrueCurrentDensity      "      "          "   "    "      "  real current density
+ * e1x, e1y                     Test electric field  e1 = [e1x e1y]
+ * j2x, j2y                     True current density j2 = [j2x j2y] 
+ * modJ                         Norm of the current density
+ * fakePower                    Fake power (must converge to the current when refinement --> infinity)
+ * current                      Current computed by integrating n.j2 on the electrodes
+ * Nx, Ny                       Unit normal vector
+ * 
+ * (C) Riccardo Scorretti 2021 / GNU GENERAL PUBLIC LICENSE (version 3 or higher)
+ */
+
+int refinement = 1;   // the higher, the better
+int nn = 10*refinement;
+
+// Create the geometry
+border bnd1(t=0,1) {x=(-3.0)*(1-t)+(0.0)*t; y=(-1.0)*(1-t)+(-1.0)*t; label=1;}
+border bnd2(t=0,1) {x=(0.0)*(1-t)+(1.9)*t; y=(-1.0)*(1-t)+(-1.0)*t; label=1;}
+border bnd3(t=0,1) {x=(1.9)*(1-t)+(2.1)*t; y=(-1.0)*(1-t)+(-1.0)*t; label=1;}
+border bnd4(t=0,1) {x=(2.1)*(1-t)+(3.0)*t; y=(-1.0)*(1-t)+(-1.0)*t; label=1;}
+border bnd5(t=0,1) {x=(3.0)*(1-t)+(3.0)*t; y=(-1.0)*(1-t)+(1.0)*t; label=20;}
+border bnd6(t=0,1) {x=(3.0)*(1-t)+(0.0)*t; y=(1.0)*(1-t)+(1.0)*t; label=1;}
+border bnd7(t=0,1) {x=(0.0)*(1-t)+(-3.0)*t; y=(1.0)*(1-t)+(1.0)*t; label=1;}
+border bnd8(t=0,1) {x=(-3.0)*(1-t)+(-3.0)*t; y=(1.0)*(1-t)+(-1.0)*t; label=10;}
+
+border incl1(t=0,1) { x=(1.9)*(1-t)+(1.9)*t; y=(-1.0)*(1-t)+(0)*t; label=1; }
+border incl2(t=0,1) { x=(1.9)*(1-t)+(2.1)*t; y=(0)*(1-t)+(0.0)*t; label=1; }
+border incl3(t=0,1) { x=(2.1)*(1-t)+(2.1)*t; y=(0.0)*(1-t)+(-1.0)*t; label=1; }
+border trou(t=0, 2*pi){x=0.5*cos(t); y=0.5*sin(t); label=3;}
+
+border cut1(t=-1, -0.5){x=0; y=t; label=1;}
+border cut2(t=0.5, 1){x=0; y=t; label=1;}
+
+mesh Th = buildmesh(bnd1(nn)+bnd2(nn)+bnd3(nn/2)+bnd4(nn)+bnd5(nn)+bnd6(nn)+bnd7(nn)+bnd8(nn)
+                    +incl1(nn)+incl2(nn/3)+incl3(nn)
+                    +trou(-4*nn)
+                    +cut1(nn/2)+cut2(nn/2));
+plot(Th, value=true, wait=1);
+
+// Retrieve the ID of each region, which is assigned automatically by the integrated mesher (in a weird way)
+cout << "ID region 1 = " << Th(-2.0,  0.0).region << endl;
+cout << "ID region 2 = " << Th( 1.0,  0.0).region << endl;
+cout << "ID region 3 = " << Th( 2.0, -0.5).region << endl;
+
+
+// Compute the test electric field e1 = -grad v1
+// ---------------------------------------------
+macro grad(u) [dx(u), dy(u)] // EOM
+
+fespace Hgrad(Th, P1);
+Hgrad v1, vt;   // v1 = unknown, vt = test function
+
+// The conductivity sigma1 is assigned randomly to each element
+Hgrad sigma1 = 1.0E6*randreal2();
+plot(sigma1, fill=false, cmm="Conductivity", grey=true, wait=true);
+
+problem computeTestElectricField(v1,vt) = 
+  int2d(Th, optimize=0)(sigma1*grad(v1)'*grad(vt)) 
+  + on(10, v1=1) 
+  + on(20, v1=0);
+
+computeTestElectricField;                       // Solve the problem
+plot(v1, value=true, grey=true, wait=true);     // Plot the scalar potential
+
+// Compute and plot the test electric field e1 = [e1x e1y]
+Hgrad e1x=-dx(v1), e1y=-dy(v1);
+plot([e1x, e1y], value=true, grey=true, wait=true);
+
+// Compute the true electric field and the true current
+// ----------------------------------------------------
+Hgrad v2;
+func sigma2 = (Th(x,y).region == 0)*1.0E1 + (Th(x,y).region == 2)*1.0E1 + (Th(x,y).region == 11)*1.0E-6;
+problem computeTrueCurrentDensity(v2,vt) = 
+  int2d(Th)(sigma2*grad(v2)'*grad(vt)) 
+  + on(10, v2=5) 
+  + on(20, v2=0);
+
+computeTrueCurrentDensity;                      // Solve the problem
+plot(v2, value=true, grey=true, wait=true);     // Plot the scalar potential
+
+Hgrad j2x=-sigma2*dx(v2), j2y=-sigma2*dy(v2);
+plot([j2x, j2y], value=true, grey=true, wait=true);
+
+// Plot the true current density
+Hgrad modJ = sqrt(j2x*j2x + j2y*j2y);
+plot([j2x, j2y], value=false, wait=true, grey=true);
+
+// Compute the fake energy
+// ---------------------------------------------------------------------
+real fakePower = int2d(Th)(j2x*e1x + j2y*e1y);
+cout << "Fake energy = " << fakePower << endl;
+
+// Compute the total current
+func Nx = N.x;
+func Ny = N.y;
+real current = abs(int1d(Th, 10) (j2x*Nx + j2y*Ny));
+cout << "Current     = " << current << endl;
+
